@@ -111,7 +111,3 @@ The generated archive is written to `Releases\davesdiscordutilities_0.2.0.zip`.
 - Source code lives in `DavesDiscordUtilities/`.
 - Release packaging lives in `scripts/Build-Release.ps1`.
 - Release notes live in `DavesDiscordUtilities/CHANGELOG.md`.
-- Do not upload `bin/`, `obj/`, or local build output as source.
-- Upload the zip from `Releases/` to Vintage Story ModDB.
-
-More maintainer steps are in [docs/RELEASE.md](docs/RELEASE.md).
