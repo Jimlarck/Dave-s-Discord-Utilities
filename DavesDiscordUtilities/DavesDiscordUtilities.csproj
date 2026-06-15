@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+        <OutputPath>bin\$(Configuration)\Mods\mod</OutputPath>
+        <PublishDir>bin\$(Configuration)\publish</PublishDir>
+        <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+        <Nullable>enable</Nullable>
+        <AssemblyName>DavesDiscordUtilities</AssemblyName>
+        <RootNamespace>DavesDiscordUtilities</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Reference Include="VintagestoryAPI">
+            <HintPath>$(VINTAGE_STORY_PRE)/VintagestoryAPI.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="VintagestoryLib">
+            <HintPath>$(VINTAGE_STORY_PRE)/VintagestoryLib.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Discord.Net.WebSocket" Version="3.18.0" PrivateAssets="all" ExcludeAssets="runtime" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Content Include="modinfo.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
+    </ItemGroup>
+
+    <Target Name="RemoveSharedRuntimeDependencies" AfterTargets="CopyFilesToOutputDirectory;Publish">
+        <ItemGroup>
+            <FilesToDelete Include="$(OutputPath)Discord.Net*.dll" />
+            <FilesToDelete Include="$(PublishDir)Discord.Net*.dll" />
+            <FilesToDelete Include="$(OutputPath)Newtonsoft.Json.dll" />
+            <FilesToDelete Include="$(PublishDir)Newtonsoft.Json.dll" />
+            <FilesToDelete Include="$(OutputPath)Microsoft.Bcl.AsyncInterfaces.dll" />
+            <FilesToDelete Include="$(PublishDir)Microsoft.Bcl.AsyncInterfaces.dll" />
+            <FilesToDelete Include="$(OutputPath)System.Interactive.Async.dll" />
+            <FilesToDelete Include="$(PublishDir)System.Interactive.Async.dll" />
+            <FilesToDelete Include="$(OutputPath)System.Linq.Async.dll" />
+            <FilesToDelete Include="$(PublishDir)System.Linq.Async.dll" />
+        </ItemGroup>
+        <Delete Files="@(FilesToDelete)" />
+        <Message Text="Removed shared runtime dependencies from DavesDiscordUtilities output" Importance="high" />
+    </Target>
+
+</Project>

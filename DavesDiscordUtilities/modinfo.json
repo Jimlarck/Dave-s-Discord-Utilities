@@ -1,0 +1,13 @@
+{
+  "type": "code",
+  "modid": "davesdiscordutilities",
+  "name": "Dave's Discord Utilities",
+  "authors": ["Jimlarck"],
+  "description": "Discord utilities for Th3Essentials, including whitelist requests and bot status updates.",
+  "version": "0.2.0",
+  "side": "server",
+  "dependencies": {
+    "game": "1.22.0",
+    "th3essentials": "2.17.1"
+  }
+}
