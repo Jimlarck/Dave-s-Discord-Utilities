@@ -40,6 +40,7 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
     private const string RemoveAction = "remove";
     private const string BanAction = "ban";
     private const string UnbanAction = "unban";
+    private const string ClassSelectAction = "charsel";
     private const string CharacterClassAttribute = "characterClass";
     private const int RequestChannelNoticeCooldownSeconds = 60;
     private const int RejectedThreadCleanupTickMs = 5 * 60 * 1000;
@@ -1590,6 +1591,8 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         {
             var changed = false;
             string? actionError = null;
+            var response = "";
+            var shouldCompleteReviewAction = true;
             if (action == AddAction)
             {
                 actionError = await ApproveRequestAsync(request, reviewer);
@@ -1615,6 +1618,13 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
                 actionError = await UnbanRequestAsync(request, reviewer);
                 changed = actionError == null;
             }
+            else if (action == ClassSelectAction)
+            {
+                actionError = await AllowClassSelectionOnceAsync(request, reviewer);
+                changed = actionError == null;
+                response = $"Class select was allowed once for `{request.PlayerName}`. The player can run `.charsel` in-game.";
+                shouldCompleteReviewAction = false;
+            }
 
             if (actionError != null)
             {
@@ -1631,14 +1641,21 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             SaveRequests();
             await RefreshReviewCardAsync(request);
 
-            var response = $"Request `{request.PlayerName}` is now {request.Status.ToLowerInvariant()}.";
+            if (string.IsNullOrWhiteSpace(response))
+            {
+                response = $"Request `{request.PlayerName}` is now {request.Status.ToLowerInvariant()}.";
+            }
+
             if (!string.IsNullOrWhiteSpace(request.NicknameUpdateError))
             {
                 response += $" Nickname note: {request.NicknameUpdateError}";
             }
 
             await UpdateComponentResponseAsync(component, response);
-            RunDiscordTask(() => CompleteReviewActionAfterResponseAsync(request), $"post-review cleanup for {request.Id}");
+            if (shouldCompleteReviewAction)
+            {
+                RunDiscordTask(() => CompleteReviewActionAfterResponseAsync(request), $"post-review cleanup for {request.Id}");
+            }
         }
         finally
         {
@@ -1690,7 +1707,7 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
 
         var parts = customId.Split(':');
         if (parts.Length != 3 || parts[0] != ButtonPrefix) return false;
-        if (parts[1] is not (AddAction or RevokeAction or RemoveAction or BanAction or UnbanAction)) return false;
+        if (parts[1] is not (AddAction or RevokeAction or RemoveAction or BanAction or UnbanAction or ClassSelectAction)) return false;
         if (parts[2].Length == 0) return false;
 
         action = parts[1];
@@ -1968,6 +1985,63 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
 
         _sapi.Logger.Audit($"{moderator.DisplayName}({moderator.Id}) removed rejected applicant thread for Discord whitelist request {request.Id}.");
         return null;
+    }
+
+    private async Task<string?> AllowClassSelectionOnceAsync(WhitelistRequest request, SocketGuildUser moderator)
+    {
+        if (request.Status != DavesDiscordUtilitiesStatuses.Approved)
+        {
+            return "Class select can only be allowed for approved requests.";
+        }
+
+        if (!PlayerNamePattern.IsMatch(request.PlayerName))
+        {
+            return "That player name cannot be used in a server command.";
+        }
+
+        var result = await ExecuteServerCommandAsync($"/player {request.PlayerName} allowcharselonce");
+        if (result.Status is not (EnumCommandStatus.Success or EnumCommandStatus.UnknownLegacy))
+        {
+            var message = string.IsNullOrWhiteSpace(result.StatusMessage) ? "server command failed" : result.StatusMessage;
+            return $"Dave could not allow class select for `{request.PlayerName}`: {SafeInline(message)}";
+        }
+
+        request.ClassSelectionAllowedAtUtc = DateTime.UtcNow;
+        request.ClassSelectionAllowedByDiscordUserId = moderator.Id;
+        request.ClassSelectionAllowedByName = SafeInline(moderator.DisplayName);
+
+        _sapi.Logger.Audit($"{moderator.DisplayName}({moderator.Id}) allowed one class selection for {request.PlayerName} through Discord request {request.Id}.");
+        return null;
+    }
+
+    private async Task<TextCommandResult> ExecuteServerCommandAsync(string command)
+    {
+        var completion = new TaskCompletionSource<TextCommandResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var args = new TextCommandCallingArgs
+        {
+            LanguageCode = "en",
+            Caller = new Caller
+            {
+                Type = EnumCallerType.Console,
+                CallerPrivileges = new[] { Privilege.commandplayer, Privilege.grantrevoke },
+                CallerRole = "admin"
+            },
+            RawArgs = new CmdArgs("")
+        };
+
+        try
+        {
+            _sapi.ChatCommands.ExecuteUnparsed(command, args, result => completion.TrySetResult(result ?? TextCommandResult.Success()));
+            return await completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        catch (TimeoutException)
+        {
+            return TextCommandResult.Error("the server command did not finish in time", "timeout");
+        }
+        catch (Exception exception)
+        {
+            return TextCommandResult.Error(exception.Message);
+        }
     }
 
     private async Task<string?> RemoveApprovedAccessAsync(WhitelistRequest request, SocketGuildUser moderator)
@@ -2992,6 +3066,11 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             lines.Add($"Nickname warning: {SafeInline(request.NicknameUpdateError)}");
         }
 
+        if (request.ClassSelectionAllowedAtUtc != null)
+        {
+            lines.Add(GetClassSelectionText(request));
+        }
+
         lines.Add("");
         lines.Add("Message:");
         lines.Add(requestText);
@@ -3099,6 +3178,15 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         }
 
         return $"{FormatClassCode(classCode)} (`{SafeInline(classCode)}`)";
+    }
+
+    private static string GetClassSelectionText(WhitelistRequest request)
+    {
+        var reviewer = request.ClassSelectionAllowedByDiscordUserId == null
+            ? request.ClassSelectionAllowedByName
+            : $"{request.ClassSelectionAllowedByName} ({request.ClassSelectionAllowedByDiscordUserId})";
+
+        return $"Class select: allowed once by {reviewer} at {request.ClassSelectionAllowedAtUtc:yyyy-MM-dd HH:mm:ss} UTC";
     }
 
     private string? GetIdentityVerificationText(WhitelistRequest request)
@@ -3425,6 +3513,11 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         if (request.Status is DavesDiscordUtilitiesStatuses.Pending or DavesDiscordUtilitiesStatuses.Approved)
         {
             builder.WithButton("Revoke", $"{ButtonPrefix}:{RevokeAction}:{request.Id}", ButtonStyle.Danger, DenyEmoji);
+        }
+
+        if (request.Status == DavesDiscordUtilitiesStatuses.Approved)
+        {
+            builder.WithButton("Allow .charsel", $"{ButtonPrefix}:{ClassSelectAction}:{request.Id}", ButtonStyle.Secondary);
         }
 
         if (IsRejectedForCleanup(request.Status) && GetCommunicationThreadId(request) != 0)

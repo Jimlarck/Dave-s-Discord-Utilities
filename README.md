@@ -4,11 +4,11 @@ Server-side Vintage Story mod for Th3Essentials.
 
 It adds:
 
-- `/request` for Discord whitelist requests.
-- staff review cards with buttons.
-- private applicant threads.
+- `/request` for Discord whitelist requests, allowing a discord-only whitelisting process.
+- staff review cards with buttons(add, revoke, ban from requesting).
+- private applicant threads (which are removed once application is closed to avoid cluttering the channel list).
 - Discord role and nickname updates.
-- optional Th3Essentials identity checks.
+- optional Th3Essentials identity checks to link a player's discord and vintagestory account.
 - strict identity mode that can revoke access if accounts are not linked in time.
 - optional Dave bot status text.
 
@@ -111,7 +111,5 @@ The generated archive is written to `Releases\davesdiscordutilities_0.2.0.zip`.
 - Source code lives in `DavesDiscordUtilities/`.
 - Release packaging lives in `scripts/Build-Release.ps1`.
 - Release notes live in `DavesDiscordUtilities/CHANGELOG.md`.
-- Do not upload `bin/`, `obj/`, or local build output as source.
-- Upload the zip from `Releases/` to Vintage Story ModDB.
 
 More maintainer steps are in [docs/RELEASE.md](docs/RELEASE.md).
