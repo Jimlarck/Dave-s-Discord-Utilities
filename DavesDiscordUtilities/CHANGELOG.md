@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+- Added an `Allow .charsel` button to approved review cards so helpers can allow one character selection from Discord.
+- Review cards now show the most recent helper who allowed class selection for a player.
+
 ## 0.2.0
 
 - Added identity verification tracking through Th3Essentials' existing `/auth` and `/dcauth` linked-account system.

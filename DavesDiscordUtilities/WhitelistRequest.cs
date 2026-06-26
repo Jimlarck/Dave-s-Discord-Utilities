@@ -16,6 +16,9 @@ public class WhitelistRequest
     public bool PreviousDiscordNicknameCaptured;
     public string? NicknameUpdateError;
     public DateTime? NicknameUpdatedAtUtc;
+    public DateTime? ClassSelectionAllowedAtUtc;
+    public ulong? ClassSelectionAllowedByDiscordUserId;
+    public string? ClassSelectionAllowedByName;
     public string? PreviousPlayerName;
     public DateTime? LastUpdatedAtUtc;
     public DateTime? IdentityVerifiedAtUtc;

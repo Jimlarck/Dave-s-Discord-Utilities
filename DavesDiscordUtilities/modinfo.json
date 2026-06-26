@@ -4,7 +4,7 @@
   "name": "Dave's Discord Utilities",
   "authors": ["Jimlarck"],
   "description": "Discord utilities for Th3Essentials, including whitelist requests and bot status updates.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "side": "server",
   "dependencies": {
     "game": "1.22.0",
