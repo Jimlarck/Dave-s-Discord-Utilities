@@ -34,6 +34,11 @@ public class DavesDiscordUtilitiesConfig
     public string BotStatusPlayerCountFormat = "players: {0}/{1}";
     public string BotStatusWorldDateFormat = "{0}, Year {1}";
     public string BotStatusFallbackDateText = "";
+    public string ModUpdateTargetGameVersion = "";
+    public ulong ModUpdateCardMessageId = 0;
+    public List<ulong>? ModUpdateOverflowMessageIds = null;
+    public List<string>? ModUpdateIgnoredModIds = null;
+    public Dictionary<string, string>? ModUpdatePageOverrides = null;
     public string PromptMessage = "Welcome to our server! Use `/request` and fill in your in-game username and message. Someone will get to you soon! If you mistyped your username, retry the command with the correct username before approval.";
     public string UsageMessage = "Use `/request` in the whitelist request channel.";
     public string InvalidNameMessage = "That does not look like a valid Vintage Story username. Use `/request` and enter only your in-game username in the playername field.";

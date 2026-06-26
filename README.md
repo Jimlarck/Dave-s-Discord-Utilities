@@ -11,6 +11,7 @@ It adds:
 - optional Th3Essentials identity checks to link a player's discord and vintagestory account.
 - strict identity mode that can revoke access if accounts are not linked in time.
 - optional Dave bot status text.
+- `/ddu check-mod-updates` for a staff-only ModDB update card in the review channel.
 
 ## Requirements
 
@@ -24,7 +25,7 @@ It adds:
 ## Install
 
 1. Install and configure Th3Essentials first.
-2. Put `davesdiscordutilities_0.2.0.zip` in the server `Mods` folder.
+2. Put `davesdiscordutilities_0.4.0.zip` in the server `Mods` folder.
 3. Start the server once.
 4. Stop the server.
 5. Edit `ModConfig/DavesDiscordUtilitiesConfigs/DavesDiscordUtilitiesConfig.json`.
@@ -103,6 +104,8 @@ To build and copy the zip to a test server:
 ```powershell
 .\scripts\Build-Release.ps1 -Install -InstallTo "C:\Path\To\Server\Mods"
 ```
+
+The generated archive is written to `Releases\davesdiscordutilities_0.4.0.zip`.
 
 ## Source Notes
 

@@ -31,6 +31,7 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
     private const string AdminCommandName = "ddu";
     private const string RepairSubcommandName = "repair";
     private const string LockdownSubcommandName = "lockdown";
+    private const string ModUpdatesSubcommandName = "check-mod-updates";
     private const string LockdownEnabledOption = "enabled";
     private const string PlayerNameOption = "playername";
     private const string MessageOption = "message";
@@ -40,12 +41,21 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
     private const string RemoveAction = "remove";
     private const string BanAction = "ban";
     private const string UnbanAction = "unban";
+    private const string ManageAction = "manage";
+    private const string CancelAction = "cancel";
+    private const string DeleteAction = "delete";
+    private const string ConfirmBanAction = "confirmban";
+    private const string ConfirmDeleteAction = "confirmdelete";
     private const string ClassSelectAction = "charsel";
     private const string CharacterClassAttribute = "characterClass";
     private const int RequestChannelNoticeCooldownSeconds = 60;
     private const int RejectedThreadCleanupTickMs = 5 * 60 * 1000;
     private const int ReviewCardRepairDelayMs = 1250;
+    private const int ModUpdateCardContentLimit = 1850;
+    private const int ModUpdateCheckDelayMs = 250;
+    private const string ModDbBaseUrl = "https://mods.vintagestory.at";
     private static readonly HttpClient HttpClient = new();
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly string[] MonthNames =
     {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -550,6 +560,12 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
                         IsRequired = true
                     }
                 }
+            },
+            new()
+            {
+                Name = ModUpdatesSubcommandName,
+                Description = "Check installed mods for ModDB updates.",
+                Type = ApplicationCommandOptionType.SubCommand
             }
         };
 
@@ -635,8 +651,12 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
                 option.Options.Any(child =>
                     child.Name.Equals(LockdownEnabledOption, StringComparison.OrdinalIgnoreCase) &&
                     child.Type == ApplicationCommandOptionType.Boolean));
+            var hasModUpdates = command.Options.Any(option =>
+                option.Name.Equals(ModUpdatesSubcommandName, StringComparison.OrdinalIgnoreCase) &&
+                option.Type == ApplicationCommandOptionType.SubCommand &&
+                (option.Options == null || !option.Options.Any()));
 
-            return hasRepair && hasLockdown;
+            return hasRepair && hasLockdown && hasModUpdates;
         }
 
         return true;
@@ -1006,9 +1026,15 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             return;
         }
 
+        if (subcommand.Name.Equals(ModUpdatesSubcommandName, StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleModUpdatesCommandAsync(command, staff);
+            return;
+        }
+
         if (!subcommand.Name.Equals(RepairSubcommandName, StringComparison.OrdinalIgnoreCase))
         {
-            await UpdateSlashResponseAsync(command, $"Unknown Dave staff command `{SafeInline(subcommand.Name)}`. Use `/ddu repair` or `/ddu lockdown`.");
+            await UpdateSlashResponseAsync(command, $"Unknown Dave staff command `{SafeInline(subcommand.Name)}`.");
             return;
         }
     }
@@ -1090,6 +1116,516 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
 
         _sapi.Logger.Audit($"{staff.DisplayName}({staff.Id}) ran DavesDiscordUtilities review-card repair for all requests.");
         await UpdateSlashResponseAsync(command, summary);
+    }
+
+    private async Task HandleModUpdatesCommandAsync(SocketSlashCommand command, SocketGuildUser staff)
+    {
+        var channel = await GetConfiguredReviewChannelAsync();
+        if (channel == null)
+        {
+            await UpdateSlashResponseAsync(command, "Dave is missing the staff review channel. Please contact staff.");
+            return;
+        }
+
+        var installedMods = GetInstalledModsForUpdateCheck();
+        if (installedMods.Count == 0)
+        {
+            await UpdateSlashResponseAsync(command, "No installed non-core mods were found to check.");
+            return;
+        }
+
+        var targetGameVersion = GetModUpdateTargetGameVersion();
+        await UpdateSlashResponseAsync(command, $"Checking {installedMods.Count} installed mod(s) against ModDB for Vintage Story {targetGameVersion}.");
+
+        var report = await CheckInstalledModUpdatesAsync(installedMods, targetGameVersion);
+        var pages = BuildModUpdateCardPages(report);
+        var publishResult = await PublishModUpdateCardsAsync(channel, pages);
+
+        if (publishResult.ConfigChanged)
+        {
+            SaveConfig();
+        }
+
+        _sapi.Logger.Audit($"{staff.DisplayName}({staff.Id}) checked DavesDiscordUtilities mod updates: {report.Updates.Count} update(s), {report.Failures.Count} warning(s).");
+
+        await UpdateSlashResponseAsync(
+            command,
+            $"Mod update card refreshed in <#{_config.ReviewChannelId}>: {report.Updates.Count} update(s), {report.Failures.Count} warning(s), {pages.Count} page(s).");
+    }
+
+    private List<InstalledModUpdateInfo> GetInstalledModsForUpdateCheck()
+    {
+        var ignored = new HashSet<string>(_config.ModUpdateIgnoredModIds ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+
+        return _sapi.ModLoader.Mods
+            .Where(mod => mod.Info != null)
+            .Select(mod => mod.Info)
+            .Where(info =>
+                !info.CoreMod &&
+                !string.IsNullOrWhiteSpace(info.ModID) &&
+                !string.IsNullOrWhiteSpace(info.Version) &&
+                !ignored.Contains(info.ModID))
+            .GroupBy(info => info.ModID, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(info => info.Name ?? info.ModID, StringComparer.OrdinalIgnoreCase)
+            .Select(info => new InstalledModUpdateInfo(
+                info.ModID.Trim(),
+                string.IsNullOrWhiteSpace(info.Name) ? info.ModID.Trim() : info.Name.Trim(),
+                info.Version.Trim()))
+            .ToList();
+    }
+
+    private string GetModUpdateTargetGameVersion()
+    {
+        if (!string.IsNullOrWhiteSpace(_config.ModUpdateTargetGameVersion))
+        {
+            return _config.ModUpdateTargetGameVersion.Trim();
+        }
+
+        var version = typeof(ICoreAPI).Assembly.GetName().Version;
+        return version == null
+            ? "unknown"
+            : $"{version.Major}.{version.Minor}.{version.Build}";
+    }
+
+    private async Task<ModUpdateReport> CheckInstalledModUpdatesAsync(IReadOnlyList<InstalledModUpdateInfo> installedMods, string targetGameVersion)
+    {
+        var report = new ModUpdateReport(DateTime.UtcNow, targetGameVersion, installedMods.Count);
+
+        for (var index = 0; index < installedMods.Count; index++)
+        {
+            var installedMod = installedMods[index];
+
+            try
+            {
+                var result = await CheckInstalledModUpdateAsync(installedMod, targetGameVersion);
+                if (result.Update != null)
+                {
+                    report.Updates.Add(result.Update.Value);
+                }
+                else if (result.Failure != null)
+                {
+                    report.Failures.Add(result.Failure.Value);
+                }
+                else
+                {
+                    report.CurrentCount++;
+                }
+            }
+            catch (Exception exception)
+            {
+                report.Failures.Add(new ModUpdateFailure(installedMod, $"ModDB check failed: {SafeModUpdateText(exception.Message, 120)}"));
+            }
+
+            if (index < installedMods.Count - 1)
+            {
+                await Task.Delay(ModUpdateCheckDelayMs);
+            }
+        }
+
+        report.Updates.Sort((left, right) => string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase));
+        report.Failures.Sort((left, right) => string.Compare(left.Mod.Name, right.Mod.Name, StringComparison.OrdinalIgnoreCase));
+        return report;
+    }
+
+    private async Task<ModUpdateCheckResult> CheckInstalledModUpdateAsync(InstalledModUpdateInfo installedMod, string targetGameVersion)
+    {
+        var modInfo = await FetchModDbModInfoAsync(installedMod.ModId);
+        if (modInfo == null)
+        {
+            return ModUpdateCheckResult.Failed(installedMod, "not found on ModDB");
+        }
+
+        var releases = GetCandidateModDbReleases(modInfo, installedMod, targetGameVersion).ToList();
+        if (releases.Count == 0)
+        {
+            return ModUpdateCheckResult.Failed(installedMod, $"no compatible ModDB release found for Vintage Story {targetGameVersion}");
+        }
+
+        var latest = releases
+            .OrderByDescending(release => release.modversion, ModVersionComparer.Instance)
+            .First();
+
+        if (string.IsNullOrWhiteSpace(latest.modversion) ||
+            CompareModVersions(latest.modversion, installedMod.Version) <= 0)
+        {
+            return ModUpdateCheckResult.Current();
+        }
+
+        var pageUrl = ResolveModDbPageUrl(installedMod, modInfo);
+        return ModUpdateCheckResult.Updated(new ModUpdateEntry(
+            string.IsNullOrWhiteSpace(modInfo.name) ? installedMod.Name : modInfo.name,
+            installedMod.ModId,
+            installedMod.Version,
+            latest.modversion,
+            pageUrl));
+    }
+
+    private async Task<ModDbModInfo?> FetchModDbModInfoAsync(string modId)
+    {
+        var url = $"{ModDbBaseUrl}/api/mod/{Uri.EscapeDataString(modId)}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.UserAgent.ParseAdd("DavesDiscordUtilities/0.4.0");
+
+        using var response = await HttpClient.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        var payload = await JsonSerializer.DeserializeAsync<ModDbModResponse>(stream, JsonOptions);
+        return payload?.statuscode == "200" ? payload.mod : null;
+    }
+
+    private IEnumerable<ModDbRelease> GetCandidateModDbReleases(ModDbModInfo modInfo, InstalledModUpdateInfo installedMod, string targetGameVersion)
+    {
+        var releases = modInfo.releases ?? new List<ModDbRelease>();
+        var matchingIdentifier = releases
+            .Where(release => release.modidstr != null && release.modidstr.Equals(installedMod.ModId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (matchingIdentifier.Count > 0)
+        {
+            releases = matchingIdentifier;
+        }
+
+        return releases
+            .Where(release => !string.IsNullOrWhiteSpace(release.modversion))
+            .Where(release => ModDbReleaseTargetsGameVersion(release, targetGameVersion));
+    }
+
+    private static bool ModDbReleaseTargetsGameVersion(ModDbRelease release, string targetGameVersion)
+    {
+        if (string.IsNullOrWhiteSpace(targetGameVersion) || targetGameVersion.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (release.tags == null || release.tags.Count == 0)
+        {
+            return false;
+        }
+
+        return release.tags.Any(tag => GameVersionTagMatches(targetGameVersion, tag));
+    }
+
+    private static bool GameVersionTagMatches(string targetGameVersion, string releaseTag)
+    {
+        var target = ParseVersionFamily(targetGameVersion);
+        var tag = ParseVersionFamily(releaseTag);
+
+        if (target.Major < 0 || tag.Major < 0 || target.Major != tag.Major || target.Minor != tag.Minor)
+        {
+            return false;
+        }
+
+        if (target.IsPrerelease)
+        {
+            return targetGameVersion.Equals(releaseTag, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return !tag.IsPrerelease;
+    }
+
+    private static VersionFamily ParseVersionFamily(string version)
+    {
+        var prerelease = version.Contains('-', StringComparison.Ordinal);
+        var main = version.Split('-', 2)[0];
+        var parts = main.Split('.');
+
+        if (parts.Length < 2 ||
+            !int.TryParse(parts[0], out var major) ||
+            !int.TryParse(parts[1], out var minor))
+        {
+            return new VersionFamily(-1, -1, prerelease);
+        }
+
+        return new VersionFamily(major, minor, prerelease);
+    }
+
+    private string ResolveModDbPageUrl(InstalledModUpdateInfo installedMod, ModDbModInfo modInfo)
+    {
+        if (_config.ModUpdatePageOverrides != null &&
+            _config.ModUpdatePageOverrides.TryGetValue(installedMod.ModId, out var overrideValue) &&
+            !string.IsNullOrWhiteSpace(overrideValue))
+        {
+            return NormalizeModDbPageOverride(overrideValue);
+        }
+
+        if (!string.IsNullOrWhiteSpace(modInfo.urlalias))
+        {
+            return $"{ModDbBaseUrl}/{Uri.EscapeDataString(modInfo.urlalias.Trim())}";
+        }
+
+        return modInfo.assetid > 0
+            ? $"{ModDbBaseUrl}/show/mod/{modInfo.assetid}"
+            : $"{ModDbBaseUrl}/api/mod/{Uri.EscapeDataString(installedMod.ModId)}";
+    }
+
+    private static string NormalizeModDbPageOverride(string overrideValue)
+    {
+        var value = overrideValue.Trim();
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            return uri.ToString();
+        }
+
+        return long.TryParse(value, out var modAssetId)
+            ? $"{ModDbBaseUrl}/show/mod/{modAssetId}"
+            : $"{ModDbBaseUrl}/{Uri.EscapeDataString(value)}";
+    }
+
+    private static List<string> BuildModUpdateCardPages(ModUpdateReport report)
+    {
+        var bodyLines = new List<string>
+        {
+            $"Checked: {report.CheckedCount} installed mod(s). Target game version: `{SafeModUpdateText(report.TargetGameVersion, 40)}`."
+        };
+
+        if (report.Updates.Count == 0 && report.Failures.Count == 0)
+        {
+            bodyLines.Add("");
+            bodyLines.Add("No mods require updating.");
+        }
+        else
+        {
+            if (report.Updates.Count == 0)
+            {
+                bodyLines.Add("");
+                bodyLines.Add("No updates were found for checked mods.");
+            }
+            else
+            {
+                bodyLines.Add("");
+                bodyLines.Add($"{report.Updates.Count} mod(s) require updates:");
+                bodyLines.AddRange(report.Updates.Select(BuildModUpdateLine));
+            }
+
+            if (report.Failures.Count > 0)
+            {
+                bodyLines.Add("");
+                bodyLines.Add($"{report.Failures.Count} mod(s) could not be checked:");
+                bodyLines.AddRange(report.Failures.Select(BuildModUpdateFailureLine));
+            }
+        }
+
+        var header = $"**Mod Updates: Last Checked {report.CheckedAtUtc:yyyy-MM-dd HH:mm} UTC**";
+        return BuildPagedMessages(header, bodyLines);
+    }
+
+    private static string BuildModUpdateLine(ModUpdateEntry update)
+    {
+        return $"- {SafeModUpdateText(update.Name, 120)} `{SafeModUpdateText(update.InstalledVersion, 40)}` -> `{SafeModUpdateText(update.LatestVersion, 40)}` [moddb]({update.PageUrl})";
+    }
+
+    private static string BuildModUpdateFailureLine(ModUpdateFailure failure)
+    {
+        return $"- {SafeModUpdateText(failure.Mod.Name, 120)} `{SafeModUpdateText(failure.Mod.Version, 40)}`: {SafeModUpdateText(failure.Reason, 160)}";
+    }
+
+    private static List<string> BuildPagedMessages(string header, List<string> bodyLines)
+    {
+        var pages = new List<List<string>>();
+        var current = new List<string>();
+
+        foreach (var line in bodyLines)
+        {
+            if (current.Count > 0 && MeasurePageLength(header, current, line) > ModUpdateCardContentLimit)
+            {
+                pages.Add(current);
+                current = new List<string>();
+            }
+
+            current.Add(line);
+        }
+
+        pages.Add(current);
+
+        return pages
+            .Select((page, index) =>
+            {
+                var pageHeader = pages.Count == 1 ? header : $"{header} (page {index + 1}/{pages.Count})";
+                return pageHeader + "\n\n" + string.Join("\n", page);
+            })
+            .ToList();
+    }
+
+    private static int MeasurePageLength(string header, List<string> currentLines, string nextLine)
+    {
+        var length = header.Length + 2 + nextLine.Length;
+        foreach (var line in currentLines)
+        {
+            length += line.Length + 1;
+        }
+
+        return length;
+    }
+
+    private async Task<ModUpdatePublishResult> PublishModUpdateCardsAsync(IMessageChannel channel, IReadOnlyList<string> pages)
+    {
+        var configChanged = false;
+        var primary = await GetTrackedUserMessageAsync(channel, _config.ModUpdateCardMessageId);
+
+        if (primary == null)
+        {
+            primary = await channel.SendMessageAsync(pages[0]);
+            _config.ModUpdateCardMessageId = primary.Id;
+            configChanged = true;
+        }
+        else
+        {
+            await primary.ModifyAsync(properties => properties.Content = pages[0]);
+        }
+
+        var overflowIds = _config.ModUpdateOverflowMessageIds ?? new List<ulong>();
+        var newOverflowIds = new List<ulong>();
+
+        for (var pageIndex = 1; pageIndex < pages.Count; pageIndex++)
+        {
+            var overflowId = pageIndex - 1 < overflowIds.Count ? overflowIds[pageIndex - 1] : 0;
+            var overflowMessage = await GetTrackedUserMessageAsync(channel, overflowId);
+
+            if (overflowMessage == null)
+            {
+                overflowMessage = await channel.SendMessageAsync(pages[pageIndex]);
+            }
+            else
+            {
+                await overflowMessage.ModifyAsync(properties => properties.Content = pages[pageIndex]);
+            }
+
+            newOverflowIds.Add(overflowMessage.Id);
+        }
+
+        for (var index = newOverflowIds.Count; index < overflowIds.Count; index++)
+        {
+            await RemoveTrackedOverflowMessageAsync(channel, overflowIds[index]);
+        }
+
+        if (!overflowIds.SequenceEqual(newOverflowIds))
+        {
+            _config.ModUpdateOverflowMessageIds = newOverflowIds.Count == 0 ? null : newOverflowIds;
+            configChanged = true;
+        }
+
+        return new ModUpdatePublishResult(configChanged);
+    }
+
+    private static async Task<IUserMessage?> GetTrackedUserMessageAsync(IMessageChannel channel, ulong messageId)
+    {
+        if (messageId == 0) return null;
+        return await channel.GetMessageAsync(messageId) as IUserMessage;
+    }
+
+    private async Task RemoveTrackedOverflowMessageAsync(IMessageChannel channel, ulong messageId)
+    {
+        var message = await GetTrackedUserMessageAsync(channel, messageId);
+        if (message == null) return;
+
+        try
+        {
+            await message.DeleteAsync();
+        }
+        catch (Exception exception)
+        {
+            _sapi.Logger.Debug($"Could not delete old DavesDiscordUtilities mod-update overflow message {messageId}: {exception.Message}");
+        }
+    }
+
+    private static string SafeModUpdateText(string value, int maxLength)
+    {
+        var safe = value
+            .Replace("@", "at")
+            .Replace("<", "")
+            .Replace(">", "")
+            .Replace("`", "'")
+            .Replace("[", "(")
+            .Replace("]", ")")
+            .Trim();
+
+        return safe.Length <= maxLength ? safe : safe[..maxLength];
+    }
+
+    private static int CompareModVersions(string left, string right)
+    {
+        var leftVersion = ParseModVersion(left);
+        var rightVersion = ParseModVersion(right);
+        var maxParts = Math.Max(leftVersion.Parts.Count, rightVersion.Parts.Count);
+
+        for (var index = 0; index < maxParts; index++)
+        {
+            var leftPart = index < leftVersion.Parts.Count ? leftVersion.Parts[index] : 0;
+            var rightPart = index < rightVersion.Parts.Count ? rightVersion.Parts[index] : 0;
+            var partCompare = leftPart.CompareTo(rightPart);
+            if (partCompare != 0)
+            {
+                return partCompare;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(leftVersion.Prerelease) &&
+            !string.IsNullOrWhiteSpace(rightVersion.Prerelease))
+        {
+            return 1;
+        }
+
+        if (!string.IsNullOrWhiteSpace(leftVersion.Prerelease) &&
+            string.IsNullOrWhiteSpace(rightVersion.Prerelease))
+        {
+            return -1;
+        }
+
+        return ComparePrereleaseVersions(leftVersion.Prerelease, rightVersion.Prerelease);
+    }
+
+    private static int ComparePrereleaseVersions(string left, string right)
+    {
+        var leftIdentifiers = left.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var rightIdentifiers = right.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var maxIdentifiers = Math.Max(leftIdentifiers.Length, rightIdentifiers.Length);
+
+        for (var index = 0; index < maxIdentifiers; index++)
+        {
+            if (index >= leftIdentifiers.Length) return -1;
+            if (index >= rightIdentifiers.Length) return 1;
+
+            var leftIdentifier = leftIdentifiers[index];
+            var rightIdentifier = rightIdentifiers[index];
+            var leftIsNumber = int.TryParse(leftIdentifier, out var leftNumber);
+            var rightIsNumber = int.TryParse(rightIdentifier, out var rightNumber);
+
+            if (leftIsNumber && rightIsNumber)
+            {
+                var numberCompare = leftNumber.CompareTo(rightNumber);
+                if (numberCompare != 0) return numberCompare;
+                continue;
+            }
+
+            if (leftIsNumber != rightIsNumber)
+            {
+                return leftIsNumber ? -1 : 1;
+            }
+
+            var textCompare = string.Compare(leftIdentifier, rightIdentifier, StringComparison.OrdinalIgnoreCase);
+            if (textCompare != 0) return textCompare;
+        }
+
+        return 0;
+    }
+
+    private static ParsedModVersion ParseModVersion(string version)
+    {
+        var clean = version.Split('+', 2)[0].Trim();
+        var pieces = clean.Split('-', 2);
+        var prerelease = pieces.Length > 1 ? pieces[1] : "";
+        var parts = pieces[0]
+            .Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => int.TryParse(part, out var value) ? value : 0)
+            .ToList();
+
+        return new ParsedModVersion(parts, prerelease);
     }
 
     private static string BuildRepairStartedMessage(int targetCount)
@@ -1593,6 +2129,7 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             string? actionError = null;
             var response = "";
             var shouldCompleteReviewAction = true;
+            var deleteRequestFromRegistry = false;
             if (action == AddAction)
             {
                 actionError = await ApproveRequestAsync(request, reviewer);
@@ -1610,6 +2147,12 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             }
             else if (action == BanAction)
             {
+                await ShowReviewCardActionButtonsAsync(component, request, BuildBanConfirmationComponents(request));
+                await UpdateComponentResponseAsync(component, $"Confirm ban for `{request.PlayerName}` on the review card.");
+                return;
+            }
+            else if (action == ConfirmBanAction)
+            {
                 actionError = await BanRequestAsync(request, reviewer);
                 changed = actionError == null;
             }
@@ -1625,6 +2168,32 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
                 response = $"Class select was allowed once for `{request.PlayerName}`. The player can run `.charsel` in-game.";
                 shouldCompleteReviewAction = false;
             }
+            else if (action == ManageAction)
+            {
+                await ShowReviewCardActionButtonsAsync(component, request, BuildManageReviewComponents(request));
+                await UpdateComponentResponseAsync(component, $"Manage actions are shown for `{request.PlayerName}`.");
+                return;
+            }
+            else if (action == CancelAction)
+            {
+                await ShowReviewCardActionButtonsAsync(component, request, BuildReviewComponents(request));
+                await UpdateComponentResponseAsync(component, $"Review actions restored for `{request.PlayerName}`.");
+                return;
+            }
+            else if (action == DeleteAction)
+            {
+                await ShowReviewCardActionButtonsAsync(component, request, BuildDeleteConfirmationComponents(request));
+                await UpdateComponentResponseAsync(component, $"Confirm registry deletion for `{request.PlayerName}` on the review card.");
+                return;
+            }
+            else if (action == ConfirmDeleteAction)
+            {
+                actionError = await DeleteRegistryEntryAsync(request, reviewer);
+                changed = actionError == null;
+                deleteRequestFromRegistry = actionError == null;
+                shouldCompleteReviewAction = false;
+                response = $"Deleted Dave's registry entry for `{request.PlayerName}` and removed the player from the server whitelist.";
+            }
 
             if (actionError != null)
             {
@@ -1635,6 +2204,15 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             if (!changed)
             {
                 await UpdateComponentResponseAsync(component, "Unknown whitelist action.");
+                return;
+            }
+
+            if (deleteRequestFromRegistry)
+            {
+                _requests.Remove(request.Id);
+                SaveRequests();
+                await MarkReviewCardDeletedAsync(component, request, reviewer);
+                await UpdateComponentResponseAsync(component, response);
                 return;
             }
 
@@ -1661,6 +2239,24 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         {
             decisionLock.Release();
         }
+    }
+
+    private async Task ShowReviewCardActionButtonsAsync(SocketMessageComponent component, WhitelistRequest request, MessageComponent components)
+    {
+        await component.Message.ModifyAsync(properties =>
+        {
+            properties.Content = BuildReviewMessage(request);
+            properties.Components = components;
+        });
+    }
+
+    private async Task MarkReviewCardDeletedAsync(SocketMessageComponent component, WhitelistRequest request, SocketGuildUser reviewer)
+    {
+        await component.Message.ModifyAsync(properties =>
+        {
+            properties.Content = BuildDeletedReviewMessage(request, reviewer);
+            properties.Components = new ComponentBuilder().Build();
+        });
     }
 
     private async Task CompleteReviewActionAfterResponseAsync(WhitelistRequest request)
@@ -1707,7 +2303,13 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
 
         var parts = customId.Split(':');
         if (parts.Length != 3 || parts[0] != ButtonPrefix) return false;
-        if (parts[1] is not (AddAction or RevokeAction or RemoveAction or BanAction or UnbanAction or ClassSelectAction)) return false;
+        if (parts[1] is not (
+            AddAction or RevokeAction or RemoveAction or BanAction or UnbanAction or ManageAction or CancelAction or DeleteAction or
+            ConfirmBanAction or ConfirmDeleteAction or ClassSelectAction))
+        {
+            return false;
+        }
+
         if (parts[2].Length == 0) return false;
 
         action = parts[1];
@@ -1984,6 +2586,34 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         request.ApplicantRespondedAtUtc = null;
 
         _sapi.Logger.Audit($"{moderator.DisplayName}({moderator.Id}) removed rejected applicant thread for Discord whitelist request {request.Id}.");
+        return null;
+    }
+
+    private async Task<string?> DeleteRegistryEntryAsync(WhitelistRequest request, SocketGuildUser moderator)
+    {
+        var actionError = await RemoveDeletedRegistryAccessAsync(request, moderator);
+        if (actionError != null) return actionError;
+
+        await DeleteTemporaryApplicantThreadAsync(request);
+
+        _sapi.Logger.Audit($"{moderator.DisplayName}({moderator.Id}) deleted DavesDiscordUtilities registry entry {request.Id} for {request.PlayerName} ({request.DiscordUserId}).");
+        return null;
+    }
+
+    private async Task<string?> RemoveDeletedRegistryAccessAsync(WhitelistRequest request, SocketGuildUser moderator)
+    {
+        if (request.Status == DavesDiscordUtilitiesStatuses.Approved)
+        {
+            var roleError = ValidateRequesterRoleUpdate(request, GetRemoveRoleIds(restorePendingRole: true));
+            if (roleError != null) return roleError;
+
+            roleError = await UpdateRequesterRolesAsync(request, approved: false, restorePendingRole: true);
+            if (roleError != null) return roleError;
+
+            await RestoreApprovedNicknameAsync(request);
+        }
+
+        UnWhitelistPlayer(request, moderator.DisplayName, moderator.Id);
         return null;
     }
 
@@ -2735,9 +3365,19 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
 
     private async Task<IMessageChannel?> GetReviewMessageChannelAsync(WhitelistRequest request)
     {
-        if (_discord == null) return null;
-
         var channelId = request.ReviewChannelId == 0 ? _config.ReviewChannelId : request.ReviewChannelId;
+        return await GetMessageChannelAsync(channelId, "review");
+    }
+
+    private async Task<IMessageChannel?> GetConfiguredReviewChannelAsync()
+    {
+        return await GetMessageChannelAsync(_config.ReviewChannelId, "staff review");
+    }
+
+    private async Task<IMessageChannel?> GetMessageChannelAsync(ulong channelId, string purpose)
+    {
+        if (_discord == null || channelId == 0) return null;
+
         if (_discord.Client.GetChannel(channelId) is IMessageChannel socketChannel)
         {
             return socketChannel;
@@ -2749,7 +3389,7 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         }
         catch (Exception exception)
         {
-            _sapi.Logger.Debug($"Could not fetch DavesDiscordUtilities review channel {channelId}: {exception.Message}");
+            _sapi.Logger.Debug($"Could not fetch DavesDiscordUtilities {purpose} channel {channelId}: {exception.Message}");
             return null;
         }
     }
@@ -2861,7 +3501,7 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
     {
         try
         {
-            await component.FollowupAsync(message, ephemeral: true);
+            await component.ModifyOriginalResponseAsync(properties => properties.Content = message);
         }
         catch (HttpException exception)
         {
@@ -2870,11 +3510,11 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
                 return;
             }
 
-            _sapi.Logger.Warning($"DavesDiscordUtilities could not send review button response: {exception.Reason ?? exception.Message}");
+            _sapi.Logger.Warning($"DavesDiscordUtilities could not update review button response: {exception.Reason ?? exception.Message}");
         }
         catch (Exception exception)
         {
-            _sapi.Logger.Warning($"DavesDiscordUtilities could not send review button response: {exception.Message}");
+            _sapi.Logger.Warning($"DavesDiscordUtilities could not update review button response: {exception.Message}");
         }
     }
 
@@ -3074,6 +3714,21 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         lines.Add("");
         lines.Add("Message:");
         lines.Add(requestText);
+
+        return string.Join("\n", lines);
+    }
+
+    private string BuildDeletedReviewMessage(WhitelistRequest request, SocketGuildUser reviewer)
+    {
+        var lines = new List<string>
+        {
+            "**Whitelist review deleted**",
+            $"ID: `{request.Id}` | Previous status: {request.Status}",
+            $"Player: `{SafeInline(request.PlayerName)}` (`{SafeInline(request.PlayerUid)}`)",
+            $"Discord: <@{request.DiscordUserId}> (`{request.DiscordUserId}`, {SafeInline(request.DiscordName ?? "")})",
+            $"Deleted: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC by {SafeInline(reviewer.DisplayName)} ({reviewer.Id})",
+            "Note: Dave removed this registry entry and will not rebuild this card. The player can submit a new request later."
+        };
 
         return string.Join("\n", lines);
     }
@@ -3515,19 +4170,46 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             builder.WithButton("Revoke", $"{ButtonPrefix}:{RevokeAction}:{request.Id}", ButtonStyle.Danger, DenyEmoji);
         }
 
-        if (request.Status == DavesDiscordUtilitiesStatuses.Approved)
-        {
-            builder.WithButton("Allow .charsel", $"{ButtonPrefix}:{ClassSelectAction}:{request.Id}", ButtonStyle.Secondary);
-        }
-
         if (IsRejectedForCleanup(request.Status) && GetCommunicationThreadId(request) != 0)
         {
             builder.WithButton("Remove", $"{ButtonPrefix}:{RemoveAction}:{request.Id}", ButtonStyle.Secondary);
         }
 
         builder.WithButton("Ban", $"{ButtonPrefix}:{BanAction}:{request.Id}", ButtonStyle.Danger);
+        builder.WithButton("Manage", $"{ButtonPrefix}:{ManageAction}:{request.Id}", ButtonStyle.Secondary);
 
         return builder.Build();
+    }
+
+    private static MessageComponent BuildManageReviewComponents(WhitelistRequest request)
+    {
+        var builder = new ComponentBuilder();
+
+        if (request.Status == DavesDiscordUtilitiesStatuses.Approved)
+        {
+            builder.WithButton("Allow .charsel", $"{ButtonPrefix}:{ClassSelectAction}:{request.Id}", ButtonStyle.Secondary);
+        }
+
+        builder.WithButton("Delete", $"{ButtonPrefix}:{DeleteAction}:{request.Id}", ButtonStyle.Danger);
+        builder.WithButton("Back", $"{ButtonPrefix}:{CancelAction}:{request.Id}", ButtonStyle.Secondary);
+
+        return builder.Build();
+    }
+
+    private static MessageComponent BuildBanConfirmationComponents(WhitelistRequest request)
+    {
+        return new ComponentBuilder()
+            .WithButton("Confirm ban", $"{ButtonPrefix}:{ConfirmBanAction}:{request.Id}", ButtonStyle.Danger)
+            .WithButton("Cancel", $"{ButtonPrefix}:{CancelAction}:{request.Id}", ButtonStyle.Secondary)
+            .Build();
+    }
+
+    private static MessageComponent BuildDeleteConfirmationComponents(WhitelistRequest request)
+    {
+        return new ComponentBuilder()
+            .WithButton("Confirm delete", $"{ButtonPrefix}:{ConfirmDeleteAction}:{request.Id}", ButtonStyle.Danger)
+            .WithButton("Cancel", $"{ButtonPrefix}:{CancelAction}:{request.Id}", ButtonStyle.Secondary)
+            .Build();
     }
 
     private static string NewRequestId()
@@ -3600,6 +4282,78 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         Reposted,
         Failed
     }
+
+    private sealed class ModUpdateReport
+    {
+        public ModUpdateReport(DateTime checkedAtUtc, string targetGameVersion, int checkedCount)
+        {
+            CheckedAtUtc = checkedAtUtc;
+            TargetGameVersion = targetGameVersion;
+            CheckedCount = checkedCount;
+        }
+
+        public DateTime CheckedAtUtc { get; }
+        public string TargetGameVersion { get; }
+        public int CheckedCount { get; }
+        public int CurrentCount { get; set; }
+        public List<ModUpdateEntry> Updates { get; } = new();
+        public List<ModUpdateFailure> Failures { get; } = new();
+    }
+
+    private sealed class ModDbModResponse
+    {
+        public ModDbModInfo? mod { get; set; }
+        public string? statuscode { get; set; }
+    }
+
+    private sealed class ModDbModInfo
+    {
+        public long assetid { get; set; }
+        public string? name { get; set; }
+        public string? urlalias { get; set; }
+        public List<ModDbRelease>? releases { get; set; }
+    }
+
+    private sealed class ModDbRelease
+    {
+        public List<string>? tags { get; set; }
+        public string? modidstr { get; set; }
+        public string? modversion { get; set; }
+    }
+
+    private sealed class ModVersionComparer : IComparer<string?>
+    {
+        public static readonly ModVersionComparer Instance = new();
+
+        public int Compare(string? x, string? y)
+        {
+            return CompareModVersions(x ?? "", y ?? "");
+        }
+    }
+
+    private readonly record struct InstalledModUpdateInfo(string ModId, string Name, string Version);
+
+    private readonly record struct ModUpdateEntry(
+        string Name,
+        string ModId,
+        string InstalledVersion,
+        string LatestVersion,
+        string PageUrl);
+
+    private readonly record struct ModUpdateFailure(InstalledModUpdateInfo Mod, string Reason);
+
+    private readonly record struct ModUpdateCheckResult(ModUpdateEntry? Update, ModUpdateFailure? Failure)
+    {
+        public static ModUpdateCheckResult Current() => new(null, null);
+        public static ModUpdateCheckResult Updated(ModUpdateEntry update) => new(update, null);
+        public static ModUpdateCheckResult Failed(InstalledModUpdateInfo mod, string reason) => new(null, new ModUpdateFailure(mod, reason));
+    }
+
+    private readonly record struct ModUpdatePublishResult(bool ConfigChanged);
+
+    private readonly record struct VersionFamily(int Major, int Minor, bool IsPrerelease);
+
+    private readonly record struct ParsedModVersion(List<int> Parts, string Prerelease);
 
     private readonly record struct ReviewCardRepairResult(ReviewCardRepairStatus Status, string? Error)
     {

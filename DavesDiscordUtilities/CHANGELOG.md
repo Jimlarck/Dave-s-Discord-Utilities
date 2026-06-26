@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Added `/ddu check-mod-updates` for staff to refresh a plain text ModDB update card in the review channel.
+- Added update-card overflow messages so large update lists stay under Discord message limits.
+- Added optional mod update config for target game version, ignored mod IDs, and ModDB page overrides.
+- Added a review-card Manage button for secondary actions, including confirmed delete cleanup and one-time character selection.
+- Ban and Delete review actions now require in-card confirmation before they run.
+- Fixed prerelease update ordering so versions like `dev.12` sort after `dev.9`.
+- Review button responses now edit the deferred ephemeral response instead of creating extra follow-up messages.
+
 ## 0.3.0
 
 - Added an `Allow .charsel` button to approved review cards so helpers can allow one character selection from Discord.
