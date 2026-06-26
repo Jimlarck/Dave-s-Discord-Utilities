@@ -104,12 +104,8 @@ To build and copy the zip to a test server:
 .\scripts\Build-Release.ps1 -Install -InstallTo "C:\Path\To\Server\Mods"
 ```
 
-The generated archive is written to `Releases\davesdiscordutilities_0.2.0.zip`.
-
 ## Source Notes
 
 - Source code lives in `DavesDiscordUtilities/`.
 - Release packaging lives in `scripts/Build-Release.ps1`.
 - Release notes live in `DavesDiscordUtilities/CHANGELOG.md`.
-
-More maintainer steps are in [docs/RELEASE.md](docs/RELEASE.md).
