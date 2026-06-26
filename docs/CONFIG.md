@@ -43,6 +43,11 @@ Replace the fake IDs with real Discord channel and role IDs.
   "BotStatusPlayerCountFormat": "players: {0}/{1}",
   "BotStatusWorldDateFormat": "{0}, Year {1}",
   "BotStatusFallbackDateText": "",
+  "ModUpdateTargetGameVersion": "",
+  "ModUpdateCardMessageId": 0,
+  "ModUpdateOverflowMessageIds": null,
+  "ModUpdateIgnoredModIds": null,
+  "ModUpdatePageOverrides": null,
   "LockdownMessage": "This server is currently not accepting new players. Please try again later.",
   "RequestBanMessage": "I cannot do that, {0}",
   "RejectedThreadNoResponseMessage": "If no response is received for 24 hours this thread will be closed.",
@@ -108,6 +113,26 @@ Example status:
 ```text
 players: 4/16 | Oct, Year 1
 ```
+
+## Mod Update Settings
+
+- `ModUpdateTargetGameVersion`: optional Vintage Story version to check against. Leave empty to use the running server API version.
+- `ModUpdateCardMessageId`: saved by Dave after posting the update card.
+- `ModUpdateOverflowMessageIds`: saved by Dave when the update list needs more than one Discord message.
+- `ModUpdateIgnoredModIds`: optional mod IDs to skip during update checks.
+- `ModUpdatePageOverrides`: optional map from installed mod ID to a ModDB page slug, asset ID, or full URL.
+
+Example page override:
+
+```json
+{
+  "ModUpdatePageOverrides": {
+    "th3essentials": "theessentials"
+  }
+}
+```
+
+Run `/ddu check-mod-updates` from Discord to refresh the card in `ReviewChannelId`.
 
 ## Message Settings
 

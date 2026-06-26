@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Added `/ddu check-mod-updates` for staff to refresh a plain text ModDB update card in the review channel.
+- Added update-card overflow messages so large update lists stay under Discord message limits.
+- Added optional mod update config for target game version, ignored mod IDs, and ModDB page overrides.
+
 ## 0.3.0
 
 - Added an `Allow .charsel` button to approved review cards so helpers can allow one character selection from Discord.

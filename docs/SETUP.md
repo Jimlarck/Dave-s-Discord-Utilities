@@ -13,7 +13,7 @@
 
 1. Install Th3Essentials.
 2. Configure Th3Essentials Discord.
-3. Put `davesdiscordutilities_0.2.0.zip` in the server `Mods` folder.
+3. Put `davesdiscordutilities_0.4.0.zip` in the server `Mods` folder.
 4. Start the server once.
 5. Stop the server.
 6. Edit `ModConfig/DavesDiscordUtilitiesConfigs/DavesDiscordUtilitiesConfig.json`.
@@ -34,6 +34,8 @@ Use this basic layout:
 Dave posts review cards in `#requests`.
 
 Applicant conversation happens in a private thread under `#request-whitelist`, unless `TemporaryThreadParentChannelId` points to another channel.
+
+Dave also posts the `/ddu check-mod-updates` card in `#requests`. Staff can pin that card manually. Dave only updates its own card and overflow messages, so no extra Discord permission is needed for this feature.
 
 ## Roles
 
@@ -113,6 +115,8 @@ The bot needs:
 - Read Message History.
 
 The bot role must be above roles it manages and members it renames.
+
+`/ddu check-mod-updates` uses the same review channel permissions listed above. It does not require `Pin Messages`, `Manage Messages`, `Attach Files`, or `Embed Links`.
 
 ## Identity Checks
 
