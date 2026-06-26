@@ -41,6 +41,11 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
     private const string RemoveAction = "remove";
     private const string BanAction = "ban";
     private const string UnbanAction = "unban";
+    private const string ManageAction = "manage";
+    private const string CancelAction = "cancel";
+    private const string DeleteAction = "delete";
+    private const string ConfirmBanAction = "confirmban";
+    private const string ConfirmDeleteAction = "confirmdelete";
     private const string ClassSelectAction = "charsel";
     private const string CharacterClassAttribute = "characterClass";
     private const int RequestChannelNoticeCooldownSeconds = 60;
@@ -1572,7 +1577,42 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             return -1;
         }
 
-        return string.Compare(leftVersion.Prerelease, rightVersion.Prerelease, StringComparison.OrdinalIgnoreCase);
+        return ComparePrereleaseVersions(leftVersion.Prerelease, rightVersion.Prerelease);
+    }
+
+    private static int ComparePrereleaseVersions(string left, string right)
+    {
+        var leftIdentifiers = left.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var rightIdentifiers = right.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var maxIdentifiers = Math.Max(leftIdentifiers.Length, rightIdentifiers.Length);
+
+        for (var index = 0; index < maxIdentifiers; index++)
+        {
+            if (index >= leftIdentifiers.Length) return -1;
+            if (index >= rightIdentifiers.Length) return 1;
+
+            var leftIdentifier = leftIdentifiers[index];
+            var rightIdentifier = rightIdentifiers[index];
+            var leftIsNumber = int.TryParse(leftIdentifier, out var leftNumber);
+            var rightIsNumber = int.TryParse(rightIdentifier, out var rightNumber);
+
+            if (leftIsNumber && rightIsNumber)
+            {
+                var numberCompare = leftNumber.CompareTo(rightNumber);
+                if (numberCompare != 0) return numberCompare;
+                continue;
+            }
+
+            if (leftIsNumber != rightIsNumber)
+            {
+                return leftIsNumber ? -1 : 1;
+            }
+
+            var textCompare = string.Compare(leftIdentifier, rightIdentifier, StringComparison.OrdinalIgnoreCase);
+            if (textCompare != 0) return textCompare;
+        }
+
+        return 0;
     }
 
     private static ParsedModVersion ParseModVersion(string version)
@@ -2089,6 +2129,7 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             string? actionError = null;
             var response = "";
             var shouldCompleteReviewAction = true;
+            var deleteRequestFromRegistry = false;
             if (action == AddAction)
             {
                 actionError = await ApproveRequestAsync(request, reviewer);
@@ -2106,6 +2147,12 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             }
             else if (action == BanAction)
             {
+                await ShowReviewCardActionButtonsAsync(component, request, BuildBanConfirmationComponents(request));
+                await UpdateComponentResponseAsync(component, $"Confirm ban for `{request.PlayerName}` on the review card.");
+                return;
+            }
+            else if (action == ConfirmBanAction)
+            {
                 actionError = await BanRequestAsync(request, reviewer);
                 changed = actionError == null;
             }
@@ -2121,6 +2168,32 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
                 response = $"Class select was allowed once for `{request.PlayerName}`. The player can run `.charsel` in-game.";
                 shouldCompleteReviewAction = false;
             }
+            else if (action == ManageAction)
+            {
+                await ShowReviewCardActionButtonsAsync(component, request, BuildManageReviewComponents(request));
+                await UpdateComponentResponseAsync(component, $"Manage actions are shown for `{request.PlayerName}`.");
+                return;
+            }
+            else if (action == CancelAction)
+            {
+                await ShowReviewCardActionButtonsAsync(component, request, BuildReviewComponents(request));
+                await UpdateComponentResponseAsync(component, $"Review actions restored for `{request.PlayerName}`.");
+                return;
+            }
+            else if (action == DeleteAction)
+            {
+                await ShowReviewCardActionButtonsAsync(component, request, BuildDeleteConfirmationComponents(request));
+                await UpdateComponentResponseAsync(component, $"Confirm registry deletion for `{request.PlayerName}` on the review card.");
+                return;
+            }
+            else if (action == ConfirmDeleteAction)
+            {
+                actionError = await DeleteRegistryEntryAsync(request, reviewer);
+                changed = actionError == null;
+                deleteRequestFromRegistry = actionError == null;
+                shouldCompleteReviewAction = false;
+                response = $"Deleted Dave's registry entry for `{request.PlayerName}` and removed the player from the server whitelist.";
+            }
 
             if (actionError != null)
             {
@@ -2131,6 +2204,15 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             if (!changed)
             {
                 await UpdateComponentResponseAsync(component, "Unknown whitelist action.");
+                return;
+            }
+
+            if (deleteRequestFromRegistry)
+            {
+                _requests.Remove(request.Id);
+                SaveRequests();
+                await MarkReviewCardDeletedAsync(component, request, reviewer);
+                await UpdateComponentResponseAsync(component, response);
                 return;
             }
 
@@ -2157,6 +2239,24 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         {
             decisionLock.Release();
         }
+    }
+
+    private async Task ShowReviewCardActionButtonsAsync(SocketMessageComponent component, WhitelistRequest request, MessageComponent components)
+    {
+        await component.Message.ModifyAsync(properties =>
+        {
+            properties.Content = BuildReviewMessage(request);
+            properties.Components = components;
+        });
+    }
+
+    private async Task MarkReviewCardDeletedAsync(SocketMessageComponent component, WhitelistRequest request, SocketGuildUser reviewer)
+    {
+        await component.Message.ModifyAsync(properties =>
+        {
+            properties.Content = BuildDeletedReviewMessage(request, reviewer);
+            properties.Components = new ComponentBuilder().Build();
+        });
     }
 
     private async Task CompleteReviewActionAfterResponseAsync(WhitelistRequest request)
@@ -2203,7 +2303,13 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
 
         var parts = customId.Split(':');
         if (parts.Length != 3 || parts[0] != ButtonPrefix) return false;
-        if (parts[1] is not (AddAction or RevokeAction or RemoveAction or BanAction or UnbanAction or ClassSelectAction)) return false;
+        if (parts[1] is not (
+            AddAction or RevokeAction or RemoveAction or BanAction or UnbanAction or ManageAction or CancelAction or DeleteAction or
+            ConfirmBanAction or ConfirmDeleteAction or ClassSelectAction))
+        {
+            return false;
+        }
+
         if (parts[2].Length == 0) return false;
 
         action = parts[1];
@@ -2480,6 +2586,34 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         request.ApplicantRespondedAtUtc = null;
 
         _sapi.Logger.Audit($"{moderator.DisplayName}({moderator.Id}) removed rejected applicant thread for Discord whitelist request {request.Id}.");
+        return null;
+    }
+
+    private async Task<string?> DeleteRegistryEntryAsync(WhitelistRequest request, SocketGuildUser moderator)
+    {
+        var actionError = await RemoveDeletedRegistryAccessAsync(request, moderator);
+        if (actionError != null) return actionError;
+
+        await DeleteTemporaryApplicantThreadAsync(request);
+
+        _sapi.Logger.Audit($"{moderator.DisplayName}({moderator.Id}) deleted DavesDiscordUtilities registry entry {request.Id} for {request.PlayerName} ({request.DiscordUserId}).");
+        return null;
+    }
+
+    private async Task<string?> RemoveDeletedRegistryAccessAsync(WhitelistRequest request, SocketGuildUser moderator)
+    {
+        if (request.Status == DavesDiscordUtilitiesStatuses.Approved)
+        {
+            var roleError = ValidateRequesterRoleUpdate(request, GetRemoveRoleIds(restorePendingRole: true));
+            if (roleError != null) return roleError;
+
+            roleError = await UpdateRequesterRolesAsync(request, approved: false, restorePendingRole: true);
+            if (roleError != null) return roleError;
+
+            await RestoreApprovedNicknameAsync(request);
+        }
+
+        UnWhitelistPlayer(request, moderator.DisplayName, moderator.Id);
         return null;
     }
 
@@ -3367,7 +3501,7 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
     {
         try
         {
-            await component.FollowupAsync(message, ephemeral: true);
+            await component.ModifyOriginalResponseAsync(properties => properties.Content = message);
         }
         catch (HttpException exception)
         {
@@ -3376,11 +3510,11 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
                 return;
             }
 
-            _sapi.Logger.Warning($"DavesDiscordUtilities could not send review button response: {exception.Reason ?? exception.Message}");
+            _sapi.Logger.Warning($"DavesDiscordUtilities could not update review button response: {exception.Reason ?? exception.Message}");
         }
         catch (Exception exception)
         {
-            _sapi.Logger.Warning($"DavesDiscordUtilities could not send review button response: {exception.Message}");
+            _sapi.Logger.Warning($"DavesDiscordUtilities could not update review button response: {exception.Message}");
         }
     }
 
@@ -3580,6 +3714,21 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
         lines.Add("");
         lines.Add("Message:");
         lines.Add(requestText);
+
+        return string.Join("\n", lines);
+    }
+
+    private string BuildDeletedReviewMessage(WhitelistRequest request, SocketGuildUser reviewer)
+    {
+        var lines = new List<string>
+        {
+            "**Whitelist review deleted**",
+            $"ID: `{request.Id}` | Previous status: {request.Status}",
+            $"Player: `{SafeInline(request.PlayerName)}` (`{SafeInline(request.PlayerUid)}`)",
+            $"Discord: <@{request.DiscordUserId}> (`{request.DiscordUserId}`, {SafeInline(request.DiscordName ?? "")})",
+            $"Deleted: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC by {SafeInline(reviewer.DisplayName)} ({reviewer.Id})",
+            "Note: Dave removed this registry entry and will not rebuild this card. The player can submit a new request later."
+        };
 
         return string.Join("\n", lines);
     }
@@ -4021,19 +4170,46 @@ public class DavesDiscordUtilitiesModSystem : ModSystem
             builder.WithButton("Revoke", $"{ButtonPrefix}:{RevokeAction}:{request.Id}", ButtonStyle.Danger, DenyEmoji);
         }
 
-        if (request.Status == DavesDiscordUtilitiesStatuses.Approved)
-        {
-            builder.WithButton("Allow .charsel", $"{ButtonPrefix}:{ClassSelectAction}:{request.Id}", ButtonStyle.Secondary);
-        }
-
         if (IsRejectedForCleanup(request.Status) && GetCommunicationThreadId(request) != 0)
         {
             builder.WithButton("Remove", $"{ButtonPrefix}:{RemoveAction}:{request.Id}", ButtonStyle.Secondary);
         }
 
         builder.WithButton("Ban", $"{ButtonPrefix}:{BanAction}:{request.Id}", ButtonStyle.Danger);
+        builder.WithButton("Manage", $"{ButtonPrefix}:{ManageAction}:{request.Id}", ButtonStyle.Secondary);
 
         return builder.Build();
+    }
+
+    private static MessageComponent BuildManageReviewComponents(WhitelistRequest request)
+    {
+        var builder = new ComponentBuilder();
+
+        if (request.Status == DavesDiscordUtilitiesStatuses.Approved)
+        {
+            builder.WithButton("Allow .charsel", $"{ButtonPrefix}:{ClassSelectAction}:{request.Id}", ButtonStyle.Secondary);
+        }
+
+        builder.WithButton("Delete", $"{ButtonPrefix}:{DeleteAction}:{request.Id}", ButtonStyle.Danger);
+        builder.WithButton("Back", $"{ButtonPrefix}:{CancelAction}:{request.Id}", ButtonStyle.Secondary);
+
+        return builder.Build();
+    }
+
+    private static MessageComponent BuildBanConfirmationComponents(WhitelistRequest request)
+    {
+        return new ComponentBuilder()
+            .WithButton("Confirm ban", $"{ButtonPrefix}:{ConfirmBanAction}:{request.Id}", ButtonStyle.Danger)
+            .WithButton("Cancel", $"{ButtonPrefix}:{CancelAction}:{request.Id}", ButtonStyle.Secondary)
+            .Build();
+    }
+
+    private static MessageComponent BuildDeleteConfirmationComponents(WhitelistRequest request)
+    {
+        return new ComponentBuilder()
+            .WithButton("Confirm delete", $"{ButtonPrefix}:{ConfirmDeleteAction}:{request.Id}", ButtonStyle.Danger)
+            .WithButton("Cancel", $"{ButtonPrefix}:{CancelAction}:{request.Id}", ButtonStyle.Secondary)
+            .Build();
     }
 
     private static string NewRequestId()

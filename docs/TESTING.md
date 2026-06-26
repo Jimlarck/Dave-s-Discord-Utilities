@@ -7,7 +7,7 @@ Run these on a test server before using the mod live.
 1. Start the server with Th3Essentials enabled.
 2. Check the log for `DavesDiscordUtilities connected to Th3Essentials Discord client.`
 3. Confirm Discord shows `/request`.
-4. Confirm Discord shows `/ddu repair` and `/ddu lockdown`.
+4. Confirm Discord shows `/ddu repair`, `/ddu lockdown`, and `/ddu check-mod-updates`.
 
 ## New Request
 
@@ -50,11 +50,30 @@ Large repair runs can take a few minutes because Dave paces Discord message edit
 ## Ban And Unban
 
 1. Click Ban on a card.
-2. Confirm the card says the user cannot submit new whitelist requests.
-3. Have that Discord user run `/request`.
-4. Confirm Dave replies with the ban message.
-5. Click Unban.
-6. Confirm the user can submit `/request` again.
+2. Confirm the card shows Confirm ban and Cancel.
+3. Click Cancel.
+4. Confirm the normal card actions return.
+5. Click Ban, then Confirm ban.
+6. Confirm the card says the user cannot submit new whitelist requests.
+7. Have that Discord user run `/request`.
+8. Confirm Dave replies with the ban message.
+9. Click Unban.
+10. Confirm the user can submit `/request` again.
+
+## Manage And Delete
+
+1. Click Manage on a card.
+2. Confirm approved cards show Allow .charsel, Delete, and Back.
+3. Confirm non-approved cards show Delete and Back.
+4. Click Delete.
+5. Confirm the card shows Confirm delete and Cancel.
+6. Click Cancel.
+7. Confirm the normal card actions return.
+8. Click Manage, Delete, then Confirm delete.
+9. Confirm the card has no active buttons.
+10. Run `/ddu repair`.
+11. Confirm the deleted card is not rebuilt.
+12. Confirm the player can submit a new `/request` later.
 
 ## Lockdown
 
